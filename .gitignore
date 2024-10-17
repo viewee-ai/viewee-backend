@@ -5,3 +5,43 @@
 __pycache__/
 *.env
 .env
+
+# Uvicorn-specific logs and directories
+uvicorn.log
+*.log
+
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+*.env.bak
+
+# MacOS
+.DS_Store
+
+# Editor backups
+*.swp
+*.swo
+*~
+
+# VSCode settings
+.vscode/
+
+# PyCharm
+.idea/
+
+# Byte-compiled, cache files
+*.cache
+*.egg-info/
+.installed.cfg
+.eggs/
+
+# pipenv, poetry, or other environment-related files
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Other OS specific
+Thumbs.db
