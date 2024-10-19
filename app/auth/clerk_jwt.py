@@ -1,9 +1,10 @@
 import requests
 from jose import JWTError, jwt
-from fastapi import HTTPException, Depends, Request
+from fastapi import HTTPException, Request
 
-CLERK_JWKS_URL = "https://your-clerk-domain/.well-known/jwks.json"
-CLERK_ISSUER = "https://your-clerk-domain"
+# Clerk configuration, replace with your Clerk domain
+CLERK_JWKS_URL = "https://grown-bedbug-51.clerk.accounts.dev/.well-known/jwks.json"
+CLERK_ISSUER = "https://grown-bedbug-51.clerk.accounts.dev"
 
 def get_public_key():
     """
@@ -12,6 +13,8 @@ def get_public_key():
     response = requests.get(CLERK_JWKS_URL)
     if response.status_code != 200:
         raise Exception("Could not fetch Clerk JWKS")
+    
+    # Return JWKS (JSON Web Key Set)
     return response.json()
 
 def verify_clerk_token(token: str):
@@ -19,14 +22,15 @@ def verify_clerk_token(token: str):
     Verifies the Clerk-issued JWT token and returns the decoded payload if valid.
     """
     public_keys = get_public_key()
+    
     try:
-        # Decode and verify the token
+        # Decode and verify the JWT token
         payload = jwt.decode(
             token,
             public_keys,
             algorithms=["RS256"],
             audience=CLERK_ISSUER,
-            issuer=CLERK_ISSUER,
+            issuer=CLERK_ISSUER
         )
         return payload
     except JWTError as e:
@@ -34,11 +38,14 @@ def verify_clerk_token(token: str):
 
 def get_current_user(request: Request):
     """
-    Retrieves the current user based on the Clerk token in the Authorization header.
+    Middleware to validate the JWT token from the Authorization header.
     """
     authorization: str = request.headers.get("Authorization")
+    print(f"Request Headers: {request.headers}") 
+    
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authorization header missing or invalid")
     
+    # Extract the token from the 'Bearer ' part
     token = authorization.split(" ")[1]
     return verify_clerk_token(token)

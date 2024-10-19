@@ -1,14 +1,22 @@
 ### **Create and Activate a Virtual Environment**
+1. Create the virtual environment (if you haven't already):
 
 On **Windows**:
 ```
 python -m venv venv
-.\venv\Scripts\activate
 ```
 
 On **macOS/Linux**:
 ```
 python3 -m venv venv
+```
+2. Activate the virtual environment:
+On **Windows**:
+```
+.\venv\Scripts\activate
+```
+On **macOS/Linux**:
+```
 source venv/bin/activate
 ```
 
