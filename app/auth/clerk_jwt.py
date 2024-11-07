@@ -2,7 +2,6 @@ import requests
 from jose import JWTError, jwt
 from fastapi import HTTPException, Request
 
-# Clerk configuration, replace with your Clerk domain
 CLERK_JWKS_URL = "https://grown-bedbug-51.clerk.accounts.dev/.well-known/jwks.json"
 CLERK_ISSUER = "https://grown-bedbug-51.clerk.accounts.dev"
 
