@@ -232,7 +232,63 @@ async def websocket_tts_endpoint(websocket: WebSocket, session_id: str):
                 await websocket.close()
 
     print("TTS streaming complete.")
+
+@app.post("/api/feedback-summary")
+async def feedback_summary(request: FeedbackRequest):
+    print("Received a request at /api/feedback-summary")
+    print(f"Session ID received: {request.session_id}")
+
+    # Validate session
+    session = sessions.get(request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
     
+    # Validate code input
+    if not request.code:
+        raise HTTPException(status_code=400, detail="Code solution is required for feedback summary.")
+    
+    # Update the session with the final code
+    session["code"] = request.code
+    
+    # Construct the prompt
+    prompt = [
+        {"role": "system", "content": "You are an AI interviewer evaluating a technical interview. Provide a comprehensive feedback summary based on the code and thought process of the interviewee."},
+        {"role": "user", "content": f"""
+            Question: {session['question']['title']}
+            Description: {session['question']['description']}
+            Input: {session['question']['input']}
+            Expected Output: {session['question']['output']}
+            Explanation: {session['question'].get('explanation', '')}
+
+            Interviewee's Code Solution:
+            {session['code']}
+
+            Interviewee's Thought Process (Transcript):
+            {session['transcript']}
+
+            Evaluate the code for correctness, efficiency, and clarity. Highlight strengths, weaknesses, and suggestions for improvement. Conclude with an overall performance evaluation.
+        """}
+    ]
+    
+    # Call OpenAI API to generate feedback
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=prompt,
+            max_tokens=500,
+            temperature=0.5,
+        )
+        feedback_summary = response.choices[0].message.content.strip()
+        print(f"Generated Feedback Summary: {feedback_summary}")
+        
+        # Store the feedback in the session
+        session["feedback"] = feedback_summary
+        
+        return {"feedback_summary": feedback_summary}
+    except Exception as e:
+        print("Error generating feedback summary:", e)
+        raise HTTPException(status_code=500, detail="Failed to generate feedback summary.")
+
 ################################################################################################################
 # Combined route to process both code and transcripts
 
