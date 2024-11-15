@@ -11,6 +11,9 @@ from uuid import uuid4
 import aiohttp
 import asyncio
 
+from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime
+import json
 
 load_dotenv()
 
@@ -34,6 +37,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
     
+@app.on_event("startup")
+async def startup_db_client():
+    app.mongodb_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    app.mongodb = app.mongodb_client["interview_sessions"]
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    app.mongodb_client.close()
 
 @app.get("/")
 def read_root():
@@ -102,6 +113,30 @@ async def handle_transcript(request: TranscriptRequest):
     return {"message": "Transcript received", "transcript": transcript} """
 
 ################################################################################################################
+'''
+Update to Contextual Prompts method
+Essentailyl maintain the context of the interview session by summarizes the previous steps without including the entire transcript. This prompt can be used to provide context to the AI model while focusing on the current update. For example, include a brief summary of the previous steps and the latest incremental update.
+'''
+def update_summary(session, new_update):
+    summary = session.get("summary", "")
+    summary += f" {new_update}"
+    session["summary"] = summary.strip()
+
+# Construct the prompt using the summary and the latest update
+def construct_prompt(session, latest_update):
+    summary = session.get("summary", "")
+    system_message = """
+        You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to facilitate a real technical interview scenario to the user based on their current solution and thought process. Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process. Responses should be professional, constructive and concise.
+    """
+    user_prompt = f"""
+        Summary of previous steps:
+        {summary}
+
+        Only use this Current solution and thought process to provide this current feedback:
+        {latest_update}
+    """
+    return {"system_message": system_message.strip(), "user_prompt": user_prompt.strip()}
+
 class FeedbackRequest(BaseModel):
     session_id: str
     code: Optional[str] = None
@@ -142,29 +177,22 @@ async def incremental_feedback(request: FeedbackRequest):
     if request.transcript:
         print(f"Received transcript update for session {request.session_id}:\n{request.transcript}")
         session["transcript"] += f" {request.transcript}" 
-
-    prompt = [
-        {"role": "system", "content": "You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to faciliate a real technical interview scenario to the user based on their current solution and thought process."},
-        {"role": "user", "content": f"""
-            Evaluate the following solution for the question '{session['question']['title']}'.
-
-            Description: {session['question']['description']}
-            Input: {session['question']['input']}
-            Expected Output: {session['question']['output']}
-            Explanation: {session['question'].get('explanation', '')}
-
-            user's current code Solution: {session['code']}
-            User's Transcript: {session['transcript']}
-
-            Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process.
-        """}
-    ]
+        
+    # Update the summary with the latest transcript
+    latest_update = f"Code: {request.code}" if request.code else ""
+    latest_update += f" Transcript: {request.transcript}" if request.transcript else ""
+    update_summary(session, latest_update)
+    
+    prompt = construct_prompt(session, latest_update)
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=prompt,
-            max_tokens=150,
+            messages=[
+                {"role": "system", "content": prompt["system_message"]},
+                {"role": "user", "content": prompt["user_prompt"]}
+            ],
+            max_tokens=200,
             temperature=0.5,
         )
         feedback = response.choices[0].message.content.strip()
@@ -232,82 +260,104 @@ async def websocket_tts_endpoint(websocket: WebSocket, session_id: str):
                 await websocket.close()
 
     print("TTS streaming complete.")
-
-@app.post("/api/feedback-summary")
-async def feedback_summary(request: FeedbackRequest):
-    print("Received a request at /api/feedback-summary")
-    print(f"Session ID received: {request.session_id}")
-
-    # Validate session
-    session = sessions.get(request.session_id)
+    
+################################################################################################################
+class EvaluationResult(BaseModel):
+    session_id: str
+    code_correctness: int  # Score between 0 and 100
+    syntax_feedback: str
+    thought_process_feedback: str
+    areas_of_excellence: str
+    areas_for_improvement: str
+    full_code: str
+    timestamp: datetime
+    
+@app.post("/api/feedback-summary", response_model=EvaluationResult)
+async def evaluate_session(session_id: str):
+    session = sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
-    
-    # Validate code input
-    if not request.code:
-        raise HTTPException(status_code=400, detail="Code solution is required for feedback summary.")
-    
-    # Update the session with the final code
-    session["code"] = request.code
-    
-    # Construct the prompt
-    prompt = [
-        {"role": "system", "content": "You are an AI interviewer evaluating a technical interview. Provide a comprehensive feedback summary based on the code and thought process of the interviewee."},
-        {"role": "user", "content": f"""
-            Question: {session['question']['title']}
-            Description: {session['question']['description']}
-            Input: {session['question']['input']}
-            Expected Output: {session['question']['output']}
-            Explanation: {session['question'].get('explanation', '')}
 
-            Interviewee's Code Solution:
-            {session['code']}
+    code = session.get("code", "")
+    transcript = session.get("transcript", "")
 
-            Interviewee's Thought Process (Transcript):
-            {session['transcript']}
+    if not code or not transcript:
+        raise HTTPException(status_code=400, detail="Incomplete session data.")
 
-            Evaluate the code for correctness, efficiency, and clarity. Highlight strengths, weaknesses, and suggestions for improvement. Conclude with an overall performance evaluation.
-        """}
-    ]
-    
-    # Call OpenAI API to generate feedback
+    # Construct the prompt for OpenAI
+    prompt = f"""
+    You are a technical interviewer. Evaluate the following code and thought process:
+
+    Code:
+    {code}
+
+    Thought Process:
+    {transcript}
+
+    Provide the following:
+    1. Code Correctness Score (0-100%).
+    2. Syntax Feedback.
+    3. Thought Process Feedback.
+    4. Areas of Excellence.
+    5. Areas for Improvement.
+    """
+
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=prompt,
+            model="gpt-4o-2024-08-06",
+            messages=[
+                {"role": "system", "content": "You are a technical interviewer."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=500,
             temperature=0.5,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "EvaluationResponse",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "code_correctness": {"type": "integer"},
+                            "syntax_feedback": {"type": "string"},
+                            "thought_process_feedback": {"type": "string"},
+                            "areas_of_excellence": {"type": "string"},
+                            "areas_for_improvement": {"type": "string"}
+                        },
+                        "required": [
+                            "code_correctness",
+                            "syntax_feedback",
+                            "thought_process_feedback",
+                            "areas_of_excellence",
+                            "areas_for_improvement"
+                        ]
+                    }
+                }
+            }
         )
-        feedback_summary = response.choices[0].message.content.strip()
-        print(f"Generated Feedback Summary: {feedback_summary}")
-        
-        # Store the feedback in the session
-        session["feedback"] = feedback_summary
-        
-        return {"feedback_summary": feedback_summary}
+        feedback = response.choices[0].message.content.strip()
+
+        # Parse the JSON response
+        feedback_data = json.loads(feedback)
+
+        evaluation_result = EvaluationResult(
+            session_id=session_id,
+            code_correctness=feedback_data["code_correctness"],
+            syntax_feedback=feedback_data["syntax_feedback"],
+            thought_process_feedback=feedback_data["thought_process_feedback"],
+            areas_of_excellence=feedback_data["areas_of_excellence"],
+            areas_for_improvement=feedback_data["areas_for_improvement"],
+            full_code=code,
+            timestamp=datetime.utcnow()
+        )
+
+        # Store the evaluation result in MongoDB
+        await app.mongodb["evaluations"].insert_one(evaluation_result.dict())
+
+        return evaluation_result
+
     except Exception as e:
-        print("Error generating feedback summary:", e)
-        raise HTTPException(status_code=500, detail="Failed to generate feedback summary.")
-
-################################################################################################################
-# Combined route to process both code and transcripts
-
-# @app.post("/api/generate-response")
-# async def generate_response(request: CodeRequest, transcript: Optional[str] = None):
-    #prompt = f"""
-    #Using the following code and transcript, provide a response as an interviewer:
-
-    #Code Question: {request.question}
-    #Code: {request.code}
-    
-    #Transcript from User: {transcript}
-    #"""
-    
-    #response = openai.Completion.create(
-    #    engine="gpt-4o-mini",
-    #    prompt=prompt,
-    #    max_tokens=300,
-    #    temperature=0.5,
-    #)
-    #return {"interviewer_response": response.choices[0].text.strip()}
+        print("Error during evaluation:", e)
+        raise HTTPException(status_code=500, detail="Evaluation failed.")
 
