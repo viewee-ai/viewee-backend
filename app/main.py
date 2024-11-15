@@ -268,22 +268,25 @@ class EvaluationResult(BaseModel):
     areas_of_excellence: str
     areas_for_improvement: str
     
+class Feedback(BaseModel):
+    session_id: str 
+
 @app.post("/api/feedback-summary")
-async def evaluate_session(request: FeedbackRequest):
+async def evaluate_session(request: Feedback):
     session = sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    code = session.get(request.code, "")
-    if not code:
-        raise HTTPException(status_code=400, detail="Incomplete session data.")
+    # code = session.get(request.code, "")
+    # if not code:
+    #     raise HTTPException(status_code=400, detail="Incomplete session data.")
 
     # Construct the prompt for OpenAI
     prompt = f"""
     You are a technical interviewer. Evaluate the following code and thought process:
 
     Code:
-    {code}
+    {session["code"]}
 
     Thought Process:
     {session["transcript"]}
