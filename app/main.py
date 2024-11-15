@@ -5,11 +5,15 @@ from fastapi.middleware.cors import CORSMiddleware
 import openai
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import Dict, Optional
+from typing import List, Dict, Any, Optional
 from uuid import uuid4
 
 import aiohttp
 import asyncio
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime
+import json
 
 
 load_dotenv()
@@ -34,6 +38,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
     
+@app.on_event("startup")
+async def startup_db_client():
+    app.mongodb_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    app.mongodb = app.mongodb_client["User"]
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    app.mongodb_client.close()
 
 @app.get("/")
 def read_root():
@@ -102,6 +114,30 @@ async def handle_transcript(request: TranscriptRequest):
     return {"message": "Transcript received", "transcript": transcript} """
 
 ################################################################################################################
+'''
+Update to Contextual Prompts method
+Essentailyl maintain the context of the interview session by summarizes the previous steps without including the entire transcript. This prompt can be used to provide context to the AI model while focusing on the current update. For example, include a brief summary of the previous steps and the latest incremental update.
+'''
+def update_summary(session, new_update):
+    summary = session.get("summary", "")
+    summary += f" {new_update}"
+    session["summary"] = summary.strip()
+
+# Construct the prompt using the summary and the latest update
+def construct_prompt(session, latest_update):
+    summary = session.get("summary", "")
+    system_message = """
+        You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to facilitate a real technical interview scenario to the user based on their current solution and thought process. Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process. Responses should be professional, constructive and concise.
+    """
+    user_prompt = f"""
+        Summary of previous steps:
+        {summary}
+
+        Only use this Current solution and thought process to provide this current feedback:
+        {latest_update}
+    """
+    return {"system_message": system_message.strip(), "user_prompt": user_prompt.strip()}
+
 class FeedbackRequest(BaseModel):
     session_id: str
     code: Optional[str] = None
@@ -142,29 +178,22 @@ async def incremental_feedback(request: FeedbackRequest):
     if request.transcript:
         print(f"Received transcript update for session {request.session_id}:\n{request.transcript}")
         session["transcript"] += f" {request.transcript}" 
-
-    prompt = [
-        {"role": "system", "content": "You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to faciliate a real technical interview scenario to the user based on their current solution and thought process."},
-        {"role": "user", "content": f"""
-            Evaluate the following solution for the question '{session['question']['title']}'.
-
-            Description: {session['question']['description']}
-            Input: {session['question']['input']}
-            Expected Output: {session['question']['output']}
-            Explanation: {session['question'].get('explanation', '')}
-
-            user's current code Solution: {session['code']}
-            User's Transcript: {session['transcript']}
-
-            Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process.
-        """}
-    ]
+        
+    # Update the summary with the latest transcript
+    latest_update = f"Code: {request.code}" if request.code else ""
+    latest_update += f" Transcript: {request.transcript}" if request.transcript else ""
+    update_summary(session, latest_update)
+    
+    prompt = construct_prompt(session, latest_update)
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=prompt,
-            max_tokens=150,
+            messages=[
+                {"role": "system", "content": prompt["system_message"]},
+                {"role": "user", "content": prompt["user_prompt"]}
+            ],
+            max_tokens=200,
             temperature=0.5,
         )
         feedback = response.choices[0].message.content.strip()
@@ -234,24 +263,110 @@ async def websocket_tts_endpoint(websocket: WebSocket, session_id: str):
     print("TTS streaming complete.")
     
 ################################################################################################################
-# Combined route to process both code and transcripts
-
-# @app.post("/api/generate-response")
-# async def generate_response(request: CodeRequest, transcript: Optional[str] = None):
-    #prompt = f"""
-    #Using the following code and transcript, provide a response as an interviewer:
-
-    #Code Question: {request.question}
-    #Code: {request.code}
+class EvaluationResult(BaseModel):
+    code_correctness: int  # Score between 0 and 100
+    thought_process_feedback: str
+    areas_of_excellence: str
+    areas_for_improvement: str
     
-    #Transcript from User: {transcript}
-    #"""
-    
-    #response = openai.Completion.create(
-    #    engine="gpt-4o-mini",
-    #    prompt=prompt,
-    #    max_tokens=300,
-    #    temperature=0.5,
-    #)
-    #return {"interviewer_response": response.choices[0].text.strip()}
+@app.post("/api/feedback-summary")
+async def evaluate_session(request: FeedbackRequest):
+    session = sessions.get(request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
 
+    code = session.get(request.code, "")
+    if not code:
+        raise HTTPException(status_code=400, detail="Incomplete session data.")
+
+    # Construct the prompt for OpenAI
+    prompt = f"""
+    You are a technical interviewer. Evaluate the following code and thought process:
+
+    Code:
+    {code}
+
+    Thought Process:
+    {session["transcript"]}
+
+    Provide the following:
+    1. Code Correctness Score (0-100%).
+    3. Thought Process Feedback.
+    4. Areas of Excellence.
+    5. Areas for Improvement.
+    """
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a technical interviewer."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=250,
+            temperature=0.8,
+            response_format=EvaluationResult,
+        )
+        feedback = response.choices[0].message.content.strip()
+
+        # Parse the JSON response
+        feedback_data = json.loads(feedback)
+
+        evaluation_result = EvaluationResult(
+            session_id=session,
+            code_correctness=feedback_data["code_correctness"],
+            thought_process_feedback=feedback_data["thought_process_feedback"],
+            areas_of_excellence=feedback_data["areas_of_excellence"],
+            areas_for_improvement=feedback_data["areas_for_improvement"],
+            full_code=code,
+            timestamp=datetime()
+        )
+
+        # Store the evaluation result in MongoDB
+        await app.mongodb["feedback"].insert_one(evaluation_result.dict())
+
+        return evaluation_result
+
+    except Exception as e:
+        print("Error during evaluation:", e)
+        raise HTTPException(status_code=500, detail="Evaluation failed.")
+
+#############################################################################################################
+class ProblemQuery(BaseModel):
+    problem_name: Optional[str] = None
+
+@app.post("/api/get-solutions", response_model=List[Dict[str, Any]])
+async def get_solutions(query: ProblemQuery):
+    try:
+        solutions_collection = app.mongodb["solutions"]
+
+        # Build the query filter
+        query_filter = {}
+        if query.problem_name:
+            query_filter["problem_name"] = query.problem_name
+
+        # Retrieve documents based on the filter
+        solutions_cursor = solutions_collection.find(query_filter)
+        solutions = await solutions_cursor.to_list(length=None)
+
+        # Format the solutions
+        formatted_solutions = []
+        for solution in solutions:
+            formatted_solution = {
+                "_id": str(solution["_id"]),
+                "problem_name": solution.get("problem_name"),
+                "solutions": [
+                    {
+                        "approach": sol.get("approach"),
+                        "code": sol.get("code"),
+                        "time_complexity": sol.get("time_complexity"),
+                        "space_complexity": sol.get("space_complexity")
+                    } for sol in solution.get("solutions", [])
+                ]
+            }
+            formatted_solutions.append(formatted_solution)
+
+        return formatted_solutions
+    except Exception as e:
+        print(f"Error retrieving solutions: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve solutions.")

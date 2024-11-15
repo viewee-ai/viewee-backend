@@ -29,3 +29,11 @@ pip install -r requirements.txt
 ```
 uvicorn app.main:app --reload
 ```
+
+
+## TODO:
+[] Fine tune AI Interviewer - req some researching into behavior
+[] Set a inactivity timer for the interviewer 
+[] Scoring metrics for final code and thought process
+[] Dashboard 
+[] Summary 
