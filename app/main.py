@@ -15,7 +15,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 import json
 
-
 load_dotenv()
 
 app = FastAPI()
