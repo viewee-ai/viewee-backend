@@ -263,25 +263,19 @@ async def websocket_tts_endpoint(websocket: WebSocket, session_id: str):
     
 ################################################################################################################
 class EvaluationResult(BaseModel):
-    session_id: str
     code_correctness: int  # Score between 0 and 100
-    syntax_feedback: str
     thought_process_feedback: str
     areas_of_excellence: str
     areas_for_improvement: str
-    full_code: str
-    timestamp: datetime
     
-@app.post("/api/feedback-summary", response_model=EvaluationResult)
-async def evaluate_session(session_id: str):
-    session = sessions.get(session_id)
+@app.post("/api/feedback-summary")
+async def evaluate_session(request: FeedbackRequest):
+    session = sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
 
-    code = session.get("code", "")
-    transcript = session.get("transcript", "")
-
-    if not code or not transcript:
+    code = session.get(request.code, "")
+    if not code:
         raise HTTPException(status_code=400, detail="Incomplete session data.")
 
     # Construct the prompt for OpenAI
@@ -292,11 +286,10 @@ async def evaluate_session(session_id: str):
     {code}
 
     Thought Process:
-    {transcript}
+    {session["transcript"]}
 
     Provide the following:
     1. Code Correctness Score (0-100%).
-    2. Syntax Feedback.
     3. Thought Process Feedback.
     4. Areas of Excellence.
     5. Areas for Improvement.
@@ -304,37 +297,14 @@ async def evaluate_session(session_id: str):
 
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o-2024-08-06",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a technical interviewer."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=500,
-            temperature=0.5,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "EvaluationResponse",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "code_correctness": {"type": "integer"},
-                            "syntax_feedback": {"type": "string"},
-                            "thought_process_feedback": {"type": "string"},
-                            "areas_of_excellence": {"type": "string"},
-                            "areas_for_improvement": {"type": "string"}
-                        },
-                        "required": [
-                            "code_correctness",
-                            "syntax_feedback",
-                            "thought_process_feedback",
-                            "areas_of_excellence",
-                            "areas_for_improvement"
-                        ]
-                    }
-                }
-            }
+            max_tokens=250,
+            temperature=0.8,
+            response_format=EvaluationResult,
         )
         feedback = response.choices[0].message.content.strip()
 
@@ -342,14 +312,13 @@ async def evaluate_session(session_id: str):
         feedback_data = json.loads(feedback)
 
         evaluation_result = EvaluationResult(
-            session_id=session_id,
+            session_id=session,
             code_correctness=feedback_data["code_correctness"],
-            syntax_feedback=feedback_data["syntax_feedback"],
             thought_process_feedback=feedback_data["thought_process_feedback"],
             areas_of_excellence=feedback_data["areas_of_excellence"],
             areas_for_improvement=feedback_data["areas_for_improvement"],
             full_code=code,
-            timestamp=datetime.utcnow()
+            timestamp=datetime()
         )
 
         # Store the evaluation result in MongoDB
@@ -361,3 +330,5 @@ async def evaluate_session(session_id: str):
         print("Error during evaluation:", e)
         raise HTTPException(status_code=500, detail="Evaluation failed.")
 
+
+#@app.get("/api/get-solutions")
