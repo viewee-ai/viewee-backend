@@ -271,68 +271,6 @@ class EvaluationResult(BaseModel):
 class Feedback(BaseModel):
     session_id: str 
 
-@app.post("/api/feedback-summary")
-async def evaluate_session(request: Feedback):
-    session = sessions.get(request.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found.")
-
-    # code = session.get(request.code, "")
-    # if not code:
-    #     raise HTTPException(status_code=400, detail="Incomplete session data.")
-
-    # Construct the prompt for OpenAI
-    prompt = f"""
-    You are a technical interviewer. Evaluate the following code and thought process:
-
-    Code:
-    {session["code"]}
-
-    Thought Process:
-    {session["transcript"]}
-
-    Provide the following:
-    1. Code Correctness Score (0-100%).
-    3. Thought Process Feedback.
-    4. Areas of Excellence.
-    5. Areas for Improvement.
-    """
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a technical interviewer."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=250,
-            temperature=0.8,
-            response_format=EvaluationResult,
-        )
-        feedback = response.choices[0].message.content.strip()
-
-        # Parse the JSON response
-        feedback_data = json.loads(feedback)
-
-        evaluation_result = EvaluationResult(
-            session_id=session,
-            code_correctness=feedback_data["code_correctness"],
-            thought_process_feedback=feedback_data["thought_process_feedback"],
-            areas_of_excellence=feedback_data["areas_of_excellence"],
-            areas_for_improvement=feedback_data["areas_for_improvement"],
-            full_code=code,
-            timestamp=datetime()
-        )
-
-        # Store the evaluation result in MongoDB
-        await app.mongodb["feedback"].insert_one(evaluation_result.dict())
-
-        return evaluation_result
-
-    except Exception as e:
-        print("Error during evaluation:", e)
-        raise HTTPException(status_code=500, detail="Evaluation failed.")
-
 #############################################################################################################
 class ProblemQuery(BaseModel):
     problem_name: Optional[str] = None
