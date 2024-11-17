@@ -14,6 +14,7 @@ import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 import json
+import pprint
 
 load_dotenv()
 
@@ -39,9 +40,13 @@ app.add_middleware(
     
 @app.on_event("startup")
 async def startup_db_client():
-    app.mongodb_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    app.mongodb = app.mongodb_client["User"]
-
+    try:
+        app.mongodb_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+        app.mongodb = app.mongodb_client["User"]
+        print("[DEBUG] MongoDB connection successful")
+    except Exception as e:
+        print(f"[ERROR] MongoDB initialization failed: {str(e)}")
+        raise
 @app.on_event("shutdown")
 async def shutdown_db_client():
     app.mongodb_client.close()
@@ -273,21 +278,40 @@ class Feedback(BaseModel):
 
 #############################################################################################################
 class ProblemQuery(BaseModel):
-    problem_name: Optional[str] = None
+    problem_name: Optional[str]
 
 @app.post("/api/get-solutions", response_model=List[Dict[str, Any]])
 async def get_solutions(query: ProblemQuery):
     try:
+        print("[DEBUG] Checking MongoDB client connection...")
+        if not hasattr(app, "mongodb") or app.mongodb is None:
+            print("[ERROR] MongoDB client not initialized")
+            raise HTTPException(status_code=500, detail="Database connection not initialized")
+        
+        print("[DEBUG] Attempting to access MongoDB collection")
         solutions_collection = app.mongodb["solutions"]
+        print("[DEBUG] Successfully connected to MongoDB collection")
 
-        # Build the query filter
-        query_filter = {}
-        if query.problem_name:
-            query_filter["problem_name"] = query.problem_name
+        if not query.problem_name:
+            print("[ERROR] No problem name provided")
+            raise HTTPException(status_code=400, detail="Problem name is required")
+
+        # Build the query filter with case-insensitive search
+        query_filter = {
+            "problem_name": {"$regex": f"^{query.problem_name}$", "$options": "i"}
+        }
+        print(f"[DEBUG] Query filter: {query_filter}")
+        print(f"[DEBUG] Looking for problem_name: {query.problem_name}")
 
         # Retrieve documents based on the filter
+        print("[DEBUG] Executing find operation")
         solutions_cursor = solutions_collection.find(query_filter)
         solutions = await solutions_cursor.to_list(length=None)
+        print(f"[DEBUG] Number of solutions found: {len(solutions)}")
+
+        if not solutions:
+            print(f"[DEBUG] No solutions found for problem: {query.problem_name}")
+            return []
 
         # Format the solutions
         formatted_solutions = []
@@ -297,16 +321,21 @@ async def get_solutions(query: ProblemQuery):
                 "problem_name": solution.get("problem_name"),
                 "solutions": [
                     {
-                        "approach": sol.get("approach"),
-                        "code": sol.get("code"),
-                        "time_complexity": sol.get("time_complexity"),
-                        "space_complexity": sol.get("space_complexity")
+                        "approach": sol.get("approach", ""),
+                        "code": sol.get("code", ""),
+                        "time_complexity": sol.get("time_complexity", ""),
+                        "space_complexity": sol.get("space_complexity", "")
                     } for sol in solution.get("solutions", [])
                 ]
             }
             formatted_solutions.append(formatted_solution)
-
+        print("[DEBUG] Formatted Solutions:")
+        pprint.pprint(formatted_solutions)
         return formatted_solutions
+
     except Exception as e:
-        print(f"Error retrieving solutions: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve solutions.")
+        print(f"[ERROR] Failed to retrieve solutions: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve solutions: {str(e)}"
+        )
