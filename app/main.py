@@ -131,7 +131,7 @@ def update_summary(session, new_update):
 def construct_prompt(session, latest_update):
     summary = session.get("summary", "")
     system_message = """
-        You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to facilitate a real technical interview scenario to the user based on their current solution and thought process. Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process. Responses should be professional, constructive and concise.
+        You are a Technical Interviewer for a Software Engineer role. Given the coding challenge, your task is to facilitate a real technical interview scenario to the user based on their current solution and thought process. Do not provide any type of solutions or hints, only feedback for the user's current solution based on the code and user's thought process. Responses should be professional, constructive and concise. Only reply with a sentence or two at a time for feedback and a short sentence for the next prompt.
     """
     user_prompt = f"""
         Summary of previous steps:
