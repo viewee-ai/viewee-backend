@@ -12,6 +12,7 @@ uvicorn.log
 
 # Virtual environment
 venv/
+venv_new/
 .venv/
 env/
 ENV/

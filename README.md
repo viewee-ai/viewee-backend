@@ -53,9 +53,15 @@ sudo /Applications/Python\ 3.10/Install\ Certificates.command
 ```
 
 
-## TODO:
-[] Fine tune AI Interviewer - req some researching into behavior
-[] Set a inactivity timer for the interviewer 
-[] Scoring metrics for final code and thought process
-[] Dashboard 
-[] Summary 
+## TESTING:
+
+Run this to test:
+```
+pytest -v
+```
+
+# Note:
+Run this command if you installed a new package
+```
+pip freeze > requirements.txt
+```
